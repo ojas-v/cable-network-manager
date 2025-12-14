@@ -1,0 +1,21 @@
+# --- DATA SAFETY ---
+# Ignore database files
+*.db
+
+# Ignore Real Customer Excel (Keep Sample file only)
+Merged_Customer_List.xlsx
+
+# --- PYTHON ---
+__pycache__/
+*.py[cod]
+
+# --- BUILD ---
+dist/
+build/
+*.spec
+
+# --- IDE ---
+.vscode/
+
+# --- TEMP ---
+temp_receipt.html
