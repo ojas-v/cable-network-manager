@@ -12,13 +12,11 @@ import pandas as pd
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("dark-blue")
 
-# Database & File Constants
 DB_FILE = "cable_manager.db" 
-# GitHub Version: Points to the sample file so the app runs immediately after cloning
 EXCEL_FILE = "Sample_Customer_List.xlsx" 
 APP_ICON = "app_icon.ico"
 
-# --- BUSINESS DETAILS (PLACEHOLDERS) ---
+# --- BUSINESS DETAILS ---
 BUSINESS_NAME = "YOUR CABLE NETWORK NAME"
 BUSINESS_ADDRESS = "123, Your Street Address, City, State - Zip"
 SUPPORT_CONTACT = "9876543210" 
@@ -31,7 +29,6 @@ class CableManagerApp(ctk.CTk):
         self.title("Cable Network Manager")
         self.geometry("1300x850")
         
-        # --- APP ICON SETUP ---
         try:
             self.iconbitmap(APP_ICON)
         except:
@@ -42,16 +39,18 @@ class CableManagerApp(ctk.CTk):
 
         # --- SYSTEM INITIALIZATION ---
         self.init_database()
-        self.check_db_schema()
+        self.check_db_schema() 
         self.auto_import_data()
 
         # --- Variables ---
         self.current_customer_id = None
+        
         self.var_can = StringVar()
         self.var_name = StringVar()
         self.var_address = StringVar()
         self.var_contact = StringVar()
         self.var_stb = StringVar()
+        self.var_stb_type = StringVar(value="SD") 
         self.var_smartcard = StringVar()
         self.var_router = StringVar()
         self.var_net_acc = StringVar()
@@ -59,17 +58,18 @@ class CableManagerApp(ctk.CTk):
         self.var_connections = StringVar()
         self.var_recovery = StringVar()
         self.var_area = StringVar(value="Unassigned")
-        self.var_status = StringVar(value="Active")
+        self.var_status = StringVar(value="Active") 
         self.var_install_date = StringVar()
+        self.var_outstanding = StringVar(value="0") 
         
-        # Reports Filters
+        self.var_pay_search = StringVar()
+        self.var_pay_amount = StringVar()
+        self.var_pay_date = StringVar(value=datetime.date.today().strftime("%Y-%m-%d"))
+        self.var_pay_history_date = StringVar(value="Select Date")
+        
         self.var_start_date = StringVar()
         self.var_end_date = StringVar()
-        
-        # Settings
         self.var_invoice_footer = StringVar(value="*Terms & Conditions Apply. Final Decision of the Proprietor.")
-        
-        # Inventory & Complaints
         self.var_inv_item = StringVar()
         self.var_inv_qty = StringVar()
         self.var_complaint_issue = StringVar()
@@ -83,23 +83,21 @@ class CableManagerApp(ctk.CTk):
         return sqlite3.connect(DB_FILE)
 
     def init_database(self):
-        """Creates all necessary tables if they do not exist."""
         conn = self.get_db_connection()
         c = conn.cursor()
         
-        # 1. Customers
         c.execute('''
             CREATE TABLE IF NOT EXISTS customers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 can TEXT, name TEXT, address TEXT, contact_no TEXT, stb_no TEXT, 
-                recovery_date TEXT, area TEXT, smart_card_no TEXT, wifi_router_id TEXT, 
-                net_acc_no TEXT, install_date TEXT, monthly_rental TEXT, 
+                stb_type TEXT, recovery_date TEXT, area TEXT, smart_card_no TEXT, 
+                wifi_router_id TEXT, net_acc_no TEXT, install_date TEXT, monthly_rental TEXT, 
                 total_connections TEXT, status TEXT DEFAULT 'Active',
-                deposits TEXT, wifi_payment_details TEXT, last_payment_date TEXT, paid_amount TEXT
+                deposits TEXT, wifi_payment_details TEXT, last_payment_date TEXT, 
+                paid_amount TEXT, outstanding_amount TEXT DEFAULT '0'
             )
         ''')
 
-        # 2. Inventory
         c.execute('''
             CREATE TABLE IF NOT EXISTS inventory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,14 +105,12 @@ class CableManagerApp(ctk.CTk):
                 quantity INTEGER DEFAULT 0
             )
         ''')
-        # Seed default inventory
         c.execute("SELECT count(*) FROM inventory")
         if c.fetchone()[0] == 0:
             defaults = ["Set Top Box", "Adapter", "Remote", "HDMI Cord", "AV Cord", "Wire (Bundle)", "WiFi Router"]
             for item in defaults:
                 c.execute("INSERT OR IGNORE INTO inventory (item_name, quantity) VALUES (?, 0)", (item,))
 
-        # 3. Complaints
         c.execute('''
             CREATE TABLE IF NOT EXISTS complaints (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,11 +123,21 @@ class CableManagerApp(ctk.CTk):
             )
         ''')
 
-        # 4. Areas
         c.execute('''
             CREATE TABLE IF NOT EXISTS areas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 area_name TEXT UNIQUE
+            )
+        ''')
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS payment_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                customer_id INTEGER,
+                can TEXT,
+                amount_paid TEXT,
+                date_paid TEXT,
+                remarks TEXT
             )
         ''')
         
@@ -139,11 +145,17 @@ class CableManagerApp(ctk.CTk):
         conn.close()
 
     def check_db_schema(self):
-        """Adds missing columns if they don't exist (Migration)"""
         conn = self.get_db_connection()
         c = conn.cursor()
-        try:
-            c.execute("SELECT date_resolved FROM complaints LIMIT 1")
+        try: c.execute("SELECT stb_type FROM customers LIMIT 1")
+        except sqlite3.OperationalError: 
+            try: c.execute("ALTER TABLE customers ADD COLUMN stb_type TEXT DEFAULT 'SD'")
+            except: pass
+        try: c.execute("SELECT outstanding_amount FROM customers LIMIT 1")
+        except sqlite3.OperationalError:
+            try: c.execute("ALTER TABLE customers ADD COLUMN outstanding_amount TEXT DEFAULT '0'")
+            except: pass
+        try: c.execute("SELECT date_resolved FROM complaints LIMIT 1")
         except sqlite3.OperationalError:
             try: c.execute("ALTER TABLE complaints ADD COLUMN date_resolved TEXT")
             except: pass
@@ -151,39 +163,24 @@ class CableManagerApp(ctk.CTk):
         conn.close()
 
     def auto_import_data(self):
-        """Imports data from Excel if the database is empty."""
-        if not os.path.exists(EXCEL_FILE):
-            return 
-
+        if not os.path.exists(EXCEL_FILE): return 
         conn = self.get_db_connection()
         c = conn.cursor()
         c.execute("SELECT count(*) FROM customers")
-        count = c.fetchone()[0]
-        
-        if count == 0:
+        if c.fetchone()[0] == 0:
             try:
                 df = pd.read_excel(EXCEL_FILE)
-                def clean(val):
-                    if pd.isna(val) or str(val).lower() == 'nan': return ""
-                    return str(val).strip()
-
                 for index, row in df.iterrows():
-                    can = clean(row.get('CAN'))
-                    name = clean(row.get('Customer Name'))
-                    address = clean(row.get('Address'))
-                    contact = clean(row.get('Contact'))
-                    stb = clean(row.get('STB No'))
-                    rec_date = clean(row.get('Payment Date'))
-                    rental = clean(row.get('Paid'))
-
+                    can = str(row.get('CAN', '')).strip()
+                    if can.lower() == 'nan': can = ""
+                    name = str(row.get('Customer Name', '')).strip()
+                    
                     c.execute('''
                         INSERT INTO customers (
-                            can, name, address, contact_no, stb_no, recovery_date, monthly_rental, area, status
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (can, name, address, contact, stb, rec_date, rental, "", "Active"))
-                
+                            can, name, address, contact_no, stb_no, recovery_date, monthly_rental, area, status, stb_type, outstanding_amount
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (can, name, str(row.get('Address','')), str(row.get('Contact','')), str(row.get('STB No','')), str(row.get('Payment Date','')), str(row.get('Paid','')), "", "Active", "SD", "0"))
                 conn.commit()
-                print(f"Auto-Imported data from {EXCEL_FILE}.")
             except Exception as e:
                 print(f"Auto-import failed: {e}")
         conn.close()
@@ -192,15 +189,15 @@ class CableManagerApp(ctk.CTk):
     def setup_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        
         ctk.CTkLabel(self.sidebar, text=BUSINESS_NAME, font=ctk.CTkFont(size=20, weight="bold"), wraplength=200).grid(row=0, column=0, padx=20, pady=20)
 
         self.create_nav_btn("Dashboard", self.show_dashboard, 1)
         self.create_nav_btn("Customer Manager", self.show_customer_manager, 2)
-        self.create_nav_btn("Inventory", self.show_inventory, 3)
-        self.create_nav_btn("Complaints", self.show_complaints, 4)
-        self.create_nav_btn("Reports", self.show_reports, 5)
-        self.create_nav_btn("Settings", self.show_settings, 6)
+        self.create_nav_btn("Customer Payments", self.show_payment_tab, 3) 
+        self.create_nav_btn("Inventory", self.show_inventory, 4)
+        self.create_nav_btn("Complaints", self.show_complaints, 5)
+        self.create_nav_btn("Reports", self.show_reports, 6)
+        self.create_nav_btn("Settings", self.show_settings, 7)
         
         ctk.CTkButton(self.sidebar, text="Exit", command=self.destroy, fg_color="#d9534f", hover_color="#c9302c").grid(row=9, column=0, padx=20, pady=40, sticky="s")
 
@@ -213,13 +210,13 @@ class CableManagerApp(ctk.CTk):
         self.main_view.grid_columnconfigure(0, weight=1)
         self.main_view.grid_rowconfigure(1, weight=1)
 
-        self.top_bar = ctk.CTkFrame(self.main_view, height=60, corner_radius=0)
+        self.top_bar = ctk.CTkFrame(self.main_view, height=70, corner_radius=0)
         self.top_bar.grid(row=0, column=0, sticky="ew")
         
-        self.search_entry = ctk.CTkEntry(self.top_bar, placeholder_text="Search Name, CAN, STB...", width=400)
-        self.search_entry.pack(side="left", padx=20, pady=10)
+        self.search_entry = ctk.CTkEntry(self.top_bar, placeholder_text="Global Search: Name, CAN, STB...", width=500, font=("Arial", 16), height=40)
+        self.search_entry.pack(side="left", padx=20, pady=15)
         self.search_entry.bind('<Return>', self.perform_search) 
-        ctk.CTkButton(self.top_bar, text="Search", command=self.perform_search, width=100).pack(side="left", padx=5)
+        ctk.CTkButton(self.top_bar, text="Search", command=self.perform_search, width=120, height=40, font=("Arial", 14, "bold")).pack(side="left", padx=5)
 
     # --- DASHBOARD ---
     def show_dashboard(self):
@@ -240,13 +237,12 @@ class CableManagerApp(ctk.CTk):
         stats = ctk.CTkFrame(content, fg_color="transparent")
         stats.pack(fill="x", padx=10)
         self.card(stats, "Active Subscribers", str(active_subs), "#007bff").pack(side="left", fill="x", expand=True, padx=5)
-        self.card(stats, "Network Coverage (Areas)", str(coverage), "#6610f2").pack(side="left", fill="x", expand=True, padx=5)
+        self.card(stats, "Network Coverage", str(coverage), "#6610f2").pack(side="left", fill="x", expand=True, padx=5)
         self.card(stats, "System Date", str(datetime.date.today()), "#28a745").pack(side="left", fill="x", expand=True, padx=5)
 
         area_frame = ctk.CTkFrame(content)
         area_frame.pack(fill="x", padx=15, pady=20)
         ctk.CTkLabel(area_frame, text="Manage Service Areas", font=("Arial", 16, "bold")).pack(anchor="w", padx=10, pady=10)
-        
         ctk.CTkEntry(area_frame, textvariable=self.var_new_area, placeholder_text="Area Name").pack(side="left", padx=10, pady=10)
         ctk.CTkButton(area_frame, text="Add Area", command=self.add_area, fg_color="green").pack(side="left", padx=10)
         ctk.CTkButton(area_frame, text="Delete Selected Area", command=self.delete_area, fg_color="red").pack(side="left", padx=10)
@@ -261,6 +257,235 @@ class CableManagerApp(ctk.CTk):
             ctk.CTkButton(actions, text="Generate Receipt (PDF)", command=self.generate_receipt_pdf, fg_color="#17a2b8").pack(side="left", padx=10, pady=10, expand=True)
         else:
             ctk.CTkLabel(actions, text="No Customer Selected. Search above.").pack(pady=10)
+
+    # --- CUSTOMER PAYMENT TAB ---
+    def show_payment_tab(self):
+        self.clear_content_frame()
+        content = ctk.CTkScrollableFrame(self.content_frame)
+        content.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        ctk.CTkLabel(content, text="Customer Payments Portal", font=("Arial", 22, "bold")).pack(anchor="w", pady=(0, 20))
+
+        search_frame = ctk.CTkFrame(content)
+        search_frame.pack(fill="x", pady=10)
+        ctk.CTkEntry(search_frame, textvariable=self.var_pay_search, placeholder_text="Type Name to Search...", width=300).pack(side="left", padx=10, pady=10)
+        ctk.CTkButton(search_frame, text="Find Customer", command=self.search_for_payment).pack(side="left", padx=10)
+
+        self.pay_results_frame = ctk.CTkScrollableFrame(content, height=100)
+        self.pay_results_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(self.pay_results_frame, text="Search results will appear here...").pack()
+
+        if self.current_customer_id:
+            main_frame = ctk.CTkFrame(content)
+            main_frame.pack(fill="both", expand=True, pady=10)
+            
+            left = ctk.CTkFrame(main_frame, fg_color="transparent")
+            left.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+            
+            ctk.CTkLabel(left, text=f"Customer: {self.var_name.get()}", font=("Arial", 18, "bold")).pack(anchor="w")
+            ctk.CTkLabel(left, text=f"Voucher/CAN No: {self.var_can.get()}", font=("Arial", 14)).pack(anchor="w")
+            ctk.CTkLabel(left, text=f"Contact: {self.var_contact.get()}", font=("Arial", 14)).pack(anchor="w")
+            ctk.CTkLabel(left, text=f"Address: {self.var_address.get()[:40]}...", font=("Arial", 14)).pack(anchor="w")
+            ctk.CTkLabel(left, text=f"STB No: {self.var_stb.get()}", font=("Arial", 14)).pack(anchor="w")
+            ctk.CTkLabel(left, text=f"Rental: ₹{self.var_rental.get()}", font=("Arial", 14)).pack(anchor="w")
+            ctk.CTkLabel(left, text=f"Total Connections: {self.var_connections.get()}", font=("Arial", 14)).pack(anchor="w")
+            
+            ctk.CTkLabel(left, text="---", font=("Arial", 10)).pack(anchor="w", pady=5)
+            ctk.CTkLabel(left, text=f"Recovery Date: {self.var_recovery.get()}", text_color="orange", font=("Arial", 14, "bold")).pack(anchor="w")
+            ctk.CTkLabel(left, text=f"Outstanding: ₹{self.var_outstanding.get()}", text_color="red", font=("Arial", 16, "bold")).pack(anchor="w")
+
+            right = ctk.CTkFrame(main_frame)
+            right.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+            
+            ctk.CTkLabel(right, text="Update Payment", font=("Arial", 16, "bold")).pack(pady=10)
+            ctk.CTkEntry(right, textvariable=self.var_pay_amount, placeholder_text="Amount Received (₹)").pack(pady=5)
+            ctk.CTkEntry(right, textvariable=self.var_pay_date, placeholder_text="Date (YYYY-MM-DD)").pack(pady=5)
+            ctk.CTkButton(right, text="Receive Payment", command=self.update_payment, fg_color="green").pack(pady=15)
+            
+            ctk.CTkLabel(right, text="Previous Payments", font=("Arial", 14, "bold")).pack(pady=(20,5))
+            
+            conn = self.get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT date_paid, amount_paid FROM payment_history WHERE customer_id=? ORDER BY date_paid DESC", (self.current_customer_id,))
+            history = c.fetchall()
+            conn.close()
+            
+            dates = [f"{h[0]} (₹{h[1]})" for h in history]
+            if not dates: dates = ["No History"]
+            
+            self.history_menu = ctk.CTkOptionMenu(right, variable=self.var_pay_history_date, values=dates)
+            self.history_menu.pack(pady=5)
+            
+        else:
+            ctk.CTkLabel(content, text="Please search and select a customer to view payment details.", text_color="gray").pack(pady=20)
+
+    def search_for_payment(self):
+        query = self.var_pay_search.get().strip()
+        if not query: return
+        
+        for widget in self.pay_results_frame.winfo_children():
+            widget.destroy()
+
+        conn = self.get_db_connection()
+        c = conn.cursor()
+        sql = "SELECT id, name, can, address FROM customers WHERE name LIKE ? OR can LIKE ?"
+        param = f"%{query}%"
+        c.execute(sql, (param, param))
+        results = c.fetchall()
+        conn.close()
+
+        if not results:
+            ctk.CTkLabel(self.pay_results_frame, text="No customers found.").pack()
+        else:
+            for res in results:
+                btn_text = f"{res[1]} (CAN: {res[2]}) - {res[3]}"
+                btn = ctk.CTkButton(self.pay_results_frame, text=btn_text, anchor="w", fg_color="transparent", border_width=1, border_color="gray",
+                                    command=lambda r=res: self.select_payment_customer(r[0]))
+                btn.pack(fill="x", pady=2)
+
+    def select_payment_customer(self, cust_id):
+        conn = self.get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM customers WHERE id=?", (cust_id,))
+        row = c.fetchone()
+        conn.close()
+        
+        if row:
+            self.load_customer(row)
+            self.show_payment_tab()
+
+    def update_payment(self):
+        amt = self.var_pay_amount.get().strip()
+        date = self.var_pay_date.get().strip()
+        
+        if not amt or not date:
+            messagebox.showerror("Error", "Enter Amount and Date")
+            return
+            
+        conn = self.get_db_connection()
+        c = conn.cursor()
+        
+        c.execute("INSERT INTO payment_history (customer_id, can, amount_paid, date_paid) VALUES (?, ?, ?, ?)",
+                  (self.current_customer_id, self.var_can.get(), amt, date))
+        
+        c.execute("UPDATE customers SET paid_amount=?, last_payment_date=?, outstanding_amount='0' WHERE id=?", 
+                  (amt, date, self.current_customer_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # SYNC TO EXCEL WITH ERROR HANDLING
+        self.sync_payment_to_excel(self.var_can.get(), amt, date)
+
+        self.var_pay_amount.set("")
+        self.show_payment_tab()
+
+    def sync_payment_to_excel(self, can, amount, date):
+        try:
+            if os.path.exists(EXCEL_FILE):
+                # Try to open file to check if locked
+                try:
+                    with open(EXCEL_FILE, "r+"): pass
+                except IOError:
+                    messagebox.showwarning("File Locked", "Please close the Excel file to sync changes.\nData saved to Database only.")
+                    return
+
+                df = pd.read_excel(EXCEL_FILE)
+                df['CAN'] = df['CAN'].astype(str)
+                can_str = str(can)
+                
+                if can_str in df['CAN'].values:
+                    idx = df.index[df['CAN'] == can_str].tolist()[0]
+                    df.at[idx, 'Paid'] = amount
+                    df.at[idx, 'Payment Date'] = date
+                    df.to_excel(EXCEL_FILE, index=False)
+                    messagebox.showinfo("Success", "Payment Updated & Synced to Excel")
+                else:
+                    messagebox.showwarning("Excel Sync", "Payment saved to App, but Customer CAN not found in Excel.")
+        except Exception as e:
+            messagebox.showerror("Excel Error", f"Could not sync to Excel: {e}")
+
+    # --- CUSTOMER MANAGER ---
+    def show_customer_manager(self):
+        self.clear_content_frame()
+        form_scroll = ctk.CTkScrollableFrame(self.content_frame)
+        form_scroll.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        ctk.CTkLabel(form_scroll, text="Customer Details", font=("Arial", 20, "bold")).pack(pady=(0, 20))
+        form_frame = ctk.CTkFrame(form_scroll, fg_color="transparent")
+        form_frame.pack(fill="x")
+        
+        self.create_entry(form_frame, "CAN Number", self.var_can, 0, 0)
+        self.create_entry(form_frame, "Customer Name", self.var_name, 0, 1)
+        self.create_entry(form_frame, "Address", self.var_address, 1, 0, colspan=2)
+        self.create_entry(form_frame, "Contact No", self.var_contact, 2, 0)
+        
+        areas = self.get_area_list()
+        ctk.CTkLabel(form_frame, text="Area").grid(row=2, column=1, sticky="w", padx=10)
+        ctk.CTkOptionMenu(form_frame, variable=self.var_area, values=areas).grid(row=3, column=1, sticky="ew", padx=10, pady=5)
+
+        self.create_entry(form_frame, "STB Number", self.var_stb, 4, 0)
+        
+        ctk.CTkLabel(form_frame, text="STB Type").grid(row=4, column=1, sticky="w", padx=10)
+        ctk.CTkOptionMenu(form_frame, variable=self.var_stb_type, values=["SD", "HD"]).grid(row=5, column=1, sticky="ew", padx=10, pady=5)
+        
+        self.create_entry(form_frame, "WiFi Router ID", self.var_router, 6, 0)
+        self.create_entry(form_frame, "Net Account No", self.var_net_acc, 6, 1)
+        self.create_entry(form_frame, "Install Date", self.var_install_date, 7, 0)
+        self.create_entry(form_frame, "Recovery Date", self.var_recovery, 7, 1)
+        self.create_entry(form_frame, "Monthly Rental", self.var_rental, 8, 0)
+        self.create_entry(form_frame, "Total Connections", self.var_connections, 8, 1)
+        self.create_entry(form_frame, "Smart Card No", self.var_smartcard, 9, 0)
+        self.create_entry(form_frame, "Outstanding Amount", self.var_outstanding, 9, 1)
+        
+        ctk.CTkLabel(form_frame, text="Status").grid(row=10, column=0, sticky="w", padx=10)
+        ctk.CTkOptionMenu(form_frame, variable=self.var_status, values=["Active", "Inactive"]).grid(row=11, column=0, sticky="ew", padx=10, pady=5)
+
+        btn_frame = ctk.CTkFrame(form_scroll, fg_color="transparent")
+        btn_frame.pack(fill="x", pady=20)
+        ctk.CTkButton(btn_frame, text="Save / Update", command=self.save_customer, fg_color="green").pack(side="right", padx=10)
+        
+        if self.current_customer_id:
+            ctk.CTkButton(btn_frame, text="Delete Customer", command=self.delete_customer, fg_color="#d9534f", hover_color="#c9302c").pack(side="right", padx=10)
+        
+        ctk.CTkButton(btn_frame, text="Clear", command=self.clear_form, fg_color="gray").pack(side="right", padx=10)
+
+    def delete_customer(self):
+        if not self.current_customer_id: return
+        
+        confirm = messagebox.askyesno("Delete Confirmation", f"Are you sure you want to delete {self.var_name.get()}?\nThis will remove them from the Database AND Excel.")
+        if not confirm: return
+        
+        can_to_delete = str(self.var_can.get())
+
+        conn = self.get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM customers WHERE id=?", (self.current_customer_id,))
+        conn.commit()
+        conn.close()
+        
+        try:
+            if os.path.exists(EXCEL_FILE):
+                # Check for lock before trying
+                try:
+                    with open(EXCEL_FILE, "r+"): pass
+                except IOError:
+                    messagebox.showwarning("File Locked", "Deleted from App, but Excel file is open.\nClose Excel and try again to sync.")
+                    self.clear_form()
+                    self.show_dashboard()
+                    return
+
+                df = pd.read_excel(EXCEL_FILE)
+                df['CAN'] = df['CAN'].astype(str)
+                df = df[df['CAN'] != can_to_delete]
+                df.to_excel(EXCEL_FILE, index=False)
+                print("Deleted from Excel")
+        except Exception as e:
+            messagebox.showerror("Excel Error", f"Could not remove from Excel: {e}")
+
+        messagebox.showinfo("Deleted", "Customer deleted successfully.")
+        self.clear_form()
+        self.show_dashboard()
 
     # --- INVENTORY ---
     def show_inventory(self):
@@ -413,39 +638,6 @@ class CableManagerApp(ctk.CTk):
         ctk.CTkLabel(s2, text="Data Backup").pack(anchor="w", padx=10, pady=5)
         ctk.CTkButton(s2, text="One-Click Backup", command=self.backup_db, fg_color="#f0ad4e").pack(padx=10, pady=10, anchor="w")
 
-    # --- CUSTOMER MANAGER ---
-    def show_customer_manager(self):
-        self.clear_content_frame()
-        form_scroll = ctk.CTkScrollableFrame(self.content_frame)
-        form_scroll.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        ctk.CTkLabel(form_scroll, text="Customer Details", font=("Arial", 20, "bold")).pack(pady=(0, 20))
-        form_frame = ctk.CTkFrame(form_scroll, fg_color="transparent")
-        form_frame.pack(fill="x")
-        
-        self.create_entry(form_frame, "CAN Number", self.var_can, 0, 0)
-        self.create_entry(form_frame, "Customer Name", self.var_name, 0, 1)
-        self.create_entry(form_frame, "Address", self.var_address, 1, 0, colspan=2)
-        self.create_entry(form_frame, "Contact No", self.var_contact, 2, 0)
-        
-        areas = self.get_area_list()
-        ctk.CTkLabel(form_frame, text="Area").grid(row=2, column=1, sticky="w", padx=10)
-        ctk.CTkOptionMenu(form_frame, variable=self.var_area, values=areas).grid(row=3, column=1, sticky="ew", padx=10, pady=5)
-
-        self.create_entry(form_frame, "STB Number", self.var_stb, 4, 0)
-        self.create_entry(form_frame, "Smart Card No", self.var_smartcard, 4, 1)
-        self.create_entry(form_frame, "WiFi Router ID", self.var_router, 5, 0)
-        self.create_entry(form_frame, "Net Account No", self.var_net_acc, 5, 1)
-        self.create_entry(form_frame, "Install Date", self.var_install_date, 6, 0)
-        self.create_entry(form_frame, "Recovery Date", self.var_recovery, 6, 1)
-        self.create_entry(form_frame, "Monthly Rental", self.var_rental, 7, 0)
-        self.create_entry(form_frame, "Total Connections", self.var_connections, 7, 1)
-        
-        btn_frame = ctk.CTkFrame(form_scroll, fg_color="transparent")
-        btn_frame.pack(fill="x", pady=20)
-        ctk.CTkButton(btn_frame, text="Save / Update", command=self.save_customer, fg_color="green").pack(side="right", padx=10)
-        ctk.CTkButton(btn_frame, text="Clear", command=self.clear_form, fg_color="gray").pack(side="right", padx=10)
-
     # --- LOGIC & HELPERS ---
     def get_area_list(self):
         conn = self.get_db_connection()
@@ -514,21 +706,25 @@ class CableManagerApp(ctk.CTk):
             btn.pack(pady=2, padx=5, fill="x")
 
     def load_customer(self, row):
+        # Maps database tuple to variables. CAUTION: Schema changed, index shifts are likely.
+        # DB: id, can, name, address, contact, stb, stb_type, recovery, area, smart, router, net_acc, install, rental, conn, status, dep, wifi_pay, last_pay, paid, outstanding
         self.current_customer_id = row[0]
         self.var_can.set(row[1])
         self.var_name.set(row[2])
         self.var_address.set(row[3])
         self.var_contact.set(row[4])
         self.var_stb.set(row[5])
-        self.var_recovery.set(row[6])
-        self.var_area.set(row[7])
-        self.var_smartcard.set(row[8])
-        self.var_router.set(row[9])
-        self.var_net_acc.set(row[10])
-        self.var_install_date.set(row[11])
-        self.var_rental.set(row[12])
-        self.var_connections.set(row[13])
-        self.var_status.set(row[14])
+        self.var_stb_type.set(row[6] if row[6] else "SD")
+        self.var_recovery.set(row[7])
+        self.var_area.set(row[8])
+        self.var_smartcard.set(row[9])
+        self.var_router.set(row[10])
+        self.var_net_acc.set(row[11])
+        self.var_install_date.set(row[12])
+        self.var_rental.set(row[13])
+        self.var_connections.set(row[14])
+        self.var_status.set(row[15])
+        self.var_outstanding.set(row[19] if row[19] else "0")
 
     def save_customer(self):
         if not self.var_name.get(): return
@@ -536,32 +732,58 @@ class CableManagerApp(ctk.CTk):
         c = conn.cursor()
         data = (
             self.var_can.get(), self.var_name.get(), self.var_address.get(), self.var_contact.get(),
-            self.var_stb.get(), self.var_recovery.get(), self.var_area.get(), self.var_smartcard.get(),
-            self.var_router.get(), self.var_net_acc.get(), self.var_install_date.get(), 
-            self.var_rental.get(), self.var_connections.get(), self.var_status.get()
+            self.var_stb.get(), self.var_stb_type.get(), self.var_recovery.get(), self.var_area.get(), 
+            self.var_smartcard.get(), self.var_router.get(), self.var_net_acc.get(), self.var_install_date.get(), 
+            self.var_rental.get(), self.var_connections.get(), self.var_status.get(), self.var_outstanding.get()
         )
         
         if self.current_customer_id:
-            c.execute("UPDATE customers SET can=?, name=?, address=?, contact_no=?, stb_no=?, recovery_date=?, area=?, smart_card_no=?, wifi_router_id=?, net_acc_no=?, install_date=?, monthly_rental=?, total_connections=?, status=? WHERE id=?", data + (self.current_customer_id,))
+            c.execute("UPDATE customers SET can=?, name=?, address=?, contact_no=?, stb_no=?, stb_type=?, recovery_date=?, area=?, smart_card_no=?, wifi_router_id=?, net_acc_no=?, install_date=?, monthly_rental=?, total_connections=?, status=?, outstanding_amount=? WHERE id=?", data + (self.current_customer_id,))
             messagebox.showinfo("Success", "Updated")
         else:
-            c.execute("INSERT INTO customers (can, name, address, contact_no, stb_no, recovery_date, area, smart_card_no, wifi_router_id, net_acc_no, install_date, monthly_rental, total_connections, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", data)
+            # Note: inserts new customers with outstanding default 0
+            c.execute("INSERT INTO customers (can, name, address, contact_no, stb_no, stb_type, recovery_date, area, smart_card_no, wifi_router_id, net_acc_no, install_date, monthly_rental, total_connections, status, outstanding_amount) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", data)
             messagebox.showinfo("Success", "Created")
-            try:
-                new_row = {
-                    'CAN': self.var_can.get(), 'Customer Name': self.var_name.get(),
-                    'Address': self.var_address.get(), 'Contact': self.var_contact.get(),
-                    'STB No': self.var_stb.get(), 'Payment Date': self.var_recovery.get(),
-                    'Paid': self.var_rental.get()
-                }
-                if os.path.exists(EXCEL_FILE):
-                    df = pd.read_excel(EXCEL_FILE)
-                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                    df.to_excel(EXCEL_FILE, index=False)
-            except Exception as e:
-                messagebox.showerror("Excel Sync Failed", f"Close Excel file!\nError: {e}")
+        
         conn.commit()
         conn.close()
+        
+        # EXCEL SYNC (Runs for both ADD and UPDATE)
+        self.sync_full_customer_to_excel(self.var_can.get(), self.var_name.get(), self.var_address.get(), self.var_contact.get(), self.var_stb.get(), self.var_recovery.get())
+
+    def sync_full_customer_to_excel(self, can, name, address, contact, stb, date):
+        try:
+            if os.path.exists(EXCEL_FILE):
+                # LOCK CHECK
+                try:
+                    with open(EXCEL_FILE, "r+"): pass
+                except IOError:
+                    messagebox.showwarning("File Locked", "Customer saved to Database, but NOT Excel.\nPlease close the Excel file.")
+                    return
+
+                df = pd.read_excel(EXCEL_FILE)
+                df['CAN'] = df['CAN'].astype(str)
+                can_str = str(can)
+                
+                if can_str in df['CAN'].values:
+                    # Update existing
+                    idx = df.index[df['CAN'] == can_str].tolist()[0]
+                    df.at[idx, 'Customer Name'] = name
+                    df.at[idx, 'Address'] = address
+                    df.at[idx, 'Contact'] = contact
+                    df.at[idx, 'STB No'] = stb
+                    df.at[idx, 'Payment Date'] = date
+                else:
+                    # Append New
+                    new_row = {
+                        'CAN': can, 'Customer Name': name, 'Address': address, 
+                        'Contact': contact, 'STB No': stb, 'Payment Date': date, 'Paid': '0'
+                    }
+                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                
+                df.to_excel(EXCEL_FILE, index=False)
+        except Exception as e:
+            messagebox.showerror("Excel Error", f"Sync failed: {e}")
 
     def open_whatsapp_web(self):
         phone = self.var_contact.get().strip()
