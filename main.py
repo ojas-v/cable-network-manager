@@ -17,8 +17,8 @@ EXCEL_FILE = "Sample_Customer_List.xlsx"
 APP_ICON = "app_icon.ico"
 
 # --- BUSINESS DETAILS ---
-BUSINESS_NAME = "YOUR CABLE NETWORK NAME"
-BUSINESS_ADDRESS = "123, Your Street Address, City, State - Zip"
+BUSINESS_NAME = "VAV CABLE NETWORKS"
+BUSINESS_ADDRESS = "Nagpur, Maharashtra"
 SUPPORT_CONTACT = "9876543210" 
 ADMIN_PASSWORD = "admin" 
 
@@ -697,13 +697,24 @@ class CableManagerApp(ctk.CTk):
         else: self.resolve_duplicates(results)
 
     def resolve_duplicates(self, results):
-        top = ctk.CTkToplevel(self)
-        top.title("Select Customer")
-        scroll = ctk.CTkScrollableFrame(top, width=400, height=300)
-        scroll.pack()
+        # --- FIXED CODE: RENDERS IN MAIN FRAME INSTEAD OF NEW WINDOW ---
+        self.clear_content_frame()
+        content = ctk.CTkScrollableFrame(self.content_frame)
+        content.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        ctk.CTkLabel(content, text="Search Results", font=("Arial", 22, "bold")).pack(anchor="w", pady=(0, 20))
+        ctk.CTkLabel(content, text=f"Found {len(results)} matches. Please select one:", text_color="gray").pack(anchor="w", pady=(0, 10))
+
         for res in results:
-            btn = ctk.CTkButton(scroll, text=f"{res[2]} | {res[1]}", command=lambda r=res: [self.load_customer(r), self.show_customer_manager(), top.destroy()])
-            btn.pack(pady=2, padx=5, fill="x")
+            display_text = f"{res[2]} | CAN: {res[1]} | STB: {res[5]}"
+            btn = ctk.CTkButton(
+                content, 
+                text=display_text, 
+                anchor="w",
+                height=40,
+                command=lambda r=res: [self.load_customer(r), self.show_customer_manager()]
+            )
+            btn.pack(pady=5, padx=5, fill="x")
 
     def load_customer(self, row):
         # Maps database tuple to variables. CAUTION: Schema changed, index shifts are likely.
